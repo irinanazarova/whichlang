@@ -8,7 +8,13 @@ is a table that tells a developer at a glance: *if I ask Claude / GPT / Gemini f
 script that..." or "a small web app for...", what am I going to get back?*
 
 The whole point is the **defaults**. Prompts deliberately never mention a language and
-never invite the model to choose one — that would change what's being measured.
+never invite the model to choose one, since that would change what's being measured.
+
+> **Related:** "every model defaults to Python" raised a follow-up: is Python actually
+> cheap to run for web workloads? That spun off into
+> [**runtime-bench**](https://github.com/irinanazarova/small-runtime-bench), a multi-runtime
+> web benchmark (Python vs Ruby vs JS, on dedicated Fly machines) with its own HTML report.
+> The benchmark and its report live entirely in that repo.
 
 ---
 
