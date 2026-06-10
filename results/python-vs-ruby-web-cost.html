@@ -59,20 +59,21 @@
 <h1>Python vs Ruby (YJIT) vs JS — which is cheaper to run for web workloads?</h1>
 <p class="sub">
   Latest runtimes, DB-backed web app. &ldquo;Cheaper&rdquo; = throughput, memory, and tail latency under realistic load.
-  8 stacks across Ruby, Python, and JavaScript (incl. Bun, Deno, NestJS, Rage). 10 workers, 200 concurrency, multi-round. Updated 2026-06-09.
-  Two evidence streams: a controlled local benchmark and a fact-checked web-research sweep.
+  8 stacks across Ruby, Python, and JavaScript (incl. Bun, Deno, NestJS, Rage). Run on <strong>5 dedicated Fly
+  performance-8x machines</strong> (8 vCPU each), so numbers are <strong>median [range] across hosts</strong>. Updated 2026-06-10.
+  Two evidence streams: a controlled multi-host benchmark and a fact-checked web-research sweep.
 </p>
 
 <div class="tldr">
   <strong>TL;DR</strong>
   <ol style="margin:.5rem 0 0;">
-    <li><strong>Async vs threaded matters more than the language</strong> &mdash; ~9&times; on I/O (Bun 42k &rarr; Django 4.7k). Every async stack beats every threaded one.</li>
-    <li><strong>I/O throughput: Bun wins</strong> (42.5k, leanest RAM, steadiest tail). <strong>Rage (29k) rides with the JS pack</strong>, beating both Python arms. NestJS pays ~25% + 1.3&nbsp;GB for being a full framework.</li>
-    <li><strong>The ORM you pick can matter more than the language:</strong> ActiveRecord &amp; Django ORM are nearly free (4&ndash;11%), but <strong>SQLAlchemy and Prisma each roughly halve throughput</strong> (53% / 59%).</li>
-    <li><strong>CPU splits by task:</strong> Ruby+YJIT wins HTML templates (Erubi) and arithmetic; V8/Bun win json and jwt; crypto ties. Python uses the least RAM per CPU task.</li>
-    <li><strong>Tail latency exposes the bouncy stacks:</strong> Bun &amp; Rails steadiest (p99 ~2&times; median); Django worst (181&nbsp;ms, 4.9&times;).</li>
+    <li><strong>Async vs threaded matters more than the language.</strong> ~9&times; on I/O (Bun 45k vs Rails 5k). Every async stack beats every threaded one.</li>
+    <li><strong>Bun wins I/O outright</strong> (45k median, leanest RAM). <strong>Among the ORM-based stacks, async Ruby (Rage, 23k) leads</strong>: 2&times; NestJS, ~4&times; the Python arms and Rails.</li>
+    <li><strong>The host matters as much as the runtime.</strong> The same stack swung <strong>1.3&ndash;1.9&times;</strong> between Fly machines; the two Intel-Xeon hosts ran ~1.5&times; faster than the three AMD-EPYC ones. Absolute RPS is a range. The <em>ordering</em> held on every host.</li>
+    <li><strong>The ORM you pick can cost more than the language.</strong> ActiveRecord is nearly free (1&ndash;5%) and Django&rsquo;s ORM is moderate (24%); <strong>Prisma and SQLAlchemy roughly halve throughput</strong> (43% / 57%).</li>
+    <li><strong>CPU splits by task</strong> (x86): Ruby+YJIT wins HTML templates, V8 (Node/Deno) win arithmetic and json, Bun wins crypto. Python uses the least RAM per task.</li>
   </ol>
-  <p style="margin:.7rem 0 0;"><strong>Verdict:</strong> No stack wins every axis. Pick async first, then optimize your bottleneck: <strong>Bun</strong> for I/O throughput, <strong>Ruby+YJIT</strong> for compute, <strong>Python</strong> for per-task RAM &mdash; and weigh the ORM, which can cost more than the runtime.</p>
+  <p style="margin:.7rem 0 0;"><strong>Verdict:</strong> No stack wins every axis. Pick async first, then optimize your bottleneck: <strong>Bun</strong> for I/O throughput, <strong>Ruby+YJIT</strong> for templating, <strong>Python</strong> for RAM. Weigh the ORM, which can cost more than the runtime, and the cloud host, which moves the number as much as any of these.</p>
 </div>
 
 <h3>Where each runtime shines</h3>
@@ -80,14 +81,14 @@
 best in each category = 100%). These traits are the same for every framework on that runtime; I/O throughput, the axis frameworks
 actually move, gets its own chart below. The <em>shape</em> tells the story: spiky where a runtime excels, pinched where it lags.</p>
 <div class="radars">
-  <div class="radar-cell"><h4><span class="tag rb">Ruby+YJIT</span></h4><canvas id="r-ruby" width="210" height="210"></canvas></div>
+  <div class="radar-cell"><h4><span class="tag rb">Ruby</span></h4><canvas id="r-ruby" width="210" height="210"></canvas></div>
   <div class="radar-cell"><h4><span class="tag js">Bun</span></h4><canvas id="r-bun" width="210" height="210"></canvas></div>
   <div class="radar-cell"><h4><span class="tag js">Node</span></h4><canvas id="r-node" width="210" height="210"></canvas></div>
   <div class="radar-cell"><h4><span class="tag js">Deno</span></h4><canvas id="r-deno" width="210" height="210"></canvas></div>
   <div class="radar-cell"><h4><span class="tag py">Python</span></h4><canvas id="r-python" width="210" height="210"></canvas></div>
 </div>
-<p class="radar-legend">Axes: <strong>Encode</strong> (json+jwt) · <strong>Template</strong> render · <strong>Crypto</strong> · <strong>Arithmetic</strong> · <strong>Memory</strong>.
-Ruby spikes on Template + Arithmetic; Bun on Crypto (but pinched on Memory); Python is a lone Memory spike; Node/Deno lean to Encode.</p>
+<p class="radar-legend">Axes: <strong>Encode</strong> (json+jwt) · <strong>Template</strong> render · <strong>Crypto</strong> · <strong>Arithmetic</strong> · <strong>Memory</strong>. Measured on x86.
+Ruby spikes on Template (Erubi); Node/Deno (V8) on Encode + Arithmetic; Bun on Crypto (BoringSSL) but pinched elsewhere; Python is a Memory spike with decent Crypto.</p>
 
 <script src="chart.umd.min.js"></script>
 <script>
@@ -95,13 +96,13 @@ Ruby spikes on Template + Arithmetic; Bun on Crypto (but pinched on Memory); Pyt
   if (typeof Chart === "undefined") return;
   // Runtime traits only. I/O lives in the framework bar chart below (it's the framework axis, not the runtime's).
   var AXES = ["Encode","Template","Crypto","Arithmetic","Memory"];
-  // normalized 0-100, outer = better (computed from measured per-call + per-task-RAM data)
+  // normalized 0-100, outer = better (computed from measured x86 per-call + per-task-RAM data)
   var D = {
-    ruby:   {c:"#b91c1c", v:[44, 100, 64, 100, 65]},
-    bun:    {c:"#b45309", v:[71, 53, 100, 55, 18]},
-    node:   {c:"#b45309", v:[94, 46, 64, 45, 28]},
-    deno:   {c:"#b45309", v:[71, 47, 11, 45, 27]},
-    python: {c:"#1d4ed8", v:[21, 31, 64, 43, 100]}
+    ruby:   {c:"#b91c1c", v:[51, 100, 62, 24, 70]},
+    bun:    {c:"#b45309", v:[51, 33, 100, 12, 28]},
+    node:   {c:"#b45309", v:[100, 37, 53, 100, 36]},
+    deno:   {c:"#b45309", v:[70, 35, 64, 100, 30]},
+    python: {c:"#1d4ed8", v:[22, 33, 79, 16, 100]}
   };
   function hexA(h,a){var n=parseInt(h.slice(1),16);return "rgba("+(n>>16&255)+","+(n>>8&255)+","+(n&255)+","+a+")";}
   function mk(id, key){
@@ -124,10 +125,12 @@ Ruby spikes on Template + Arithmetic; Bun on Crypto (but pinched on Memory); Pyt
 })();
 </script>
 
-<h3>Where frameworks diverge: I/O throughput</h3>
-<p class="note" style="margin-top:0;">The radars above are <em>runtime</em> traits &mdash; per-call CPU and memory are the same for any framework on a given
-runtime. The axis frameworks actually move is <strong>I/O concurrency</strong>. That&rsquo;s the whole job of picking a framework:
-<strong>8 stacks, ~9&times; spread</strong> from Django to Bun.</p>
+<h3>Where frameworks diverge: throughput as you&rsquo;d actually write it</h3>
+<p class="note" style="margin-top:0;">The radars above are <em>runtime</em> traits: per-call CPU and memory are the same for any framework on a given
+runtime. The axis a framework actually moves is <strong>DB-read concurrency</strong>. This chart is the <strong>idiomatic</strong>
+throughput, each stack&rsquo;s row fetched through <strong>the ORM you&rsquo;d really use</strong> (ActiveRecord, Django ORM,
+SQLAlchemy, Prisma; the raw JS arms hand-map, which is idiomatic there). Median of 5 hosts, <strong>~9&times; spread</strong> from
+Rails to Bun.</p>
 <div style="max-width:680px;margin:.5rem 0 1.5rem;">
   <canvas id="io-bars" width="680" height="320"></canvas>
 </div>
@@ -136,16 +139,16 @@ runtime. The axis frameworks actually move is <strong>I/O concurrency</strong>. 
 (function(){
   if (typeof Chart === "undefined") return;
   var el = document.getElementById("io-bars"); if(!el) return;
-  // measured median RPS + serving RSS (10 workers, 200 conc, 3 rounds), sorted desc; color by language
+  // measured median with-ORM RPS + serving PSS RAM across 5 Fly hosts (8 workers, 200 conc), sorted desc; color by language
   var rows = [
-    ["Bun.serve",       42475,  485, "js"],
-    ["Deno.serve",      34619,  615, "js"],
-    ["node:http",       32009, 1009, "js"],
-    ["NestJS",          31848, 1272, "js"],
-    ["Rage",            29354,  812, "rb"],
-    ["FastAPI",         14977, 1008, "py"],
-    ["Rails + Puma",    10175,  963, "rb"],
-    ["Django",           4750,  581, "py"]
+    ["Bun.serve",       44997,  490, "js"],
+    ["Deno.serve",      29250,  585, "js"],
+    ["node:http",       27512,  516, "js"],
+    ["Rage",            22820,  483, "rb"],
+    ["NestJS",          12491, 1364, "js"],
+    ["FastAPI",          6217,  604, "py"],
+    ["Django",           5446,  328, "py"],
+    ["Rails + Puma",     5027,  565, "rb"]
   ];
   var col = {js:"#b45309", rb:"#b91c1c", py:"#1d4ed8"};
   new Chart(el, {
@@ -156,23 +159,23 @@ runtime. The axis frameworks actually move is <strong>I/O concurrency</strong>. 
         borderWidth:0, barPercentage:0.82 }] },
     options:{ indexAxis:"y", responsive:false,
       plugins:{ legend:{display:false},
-        tooltip:{callbacks:{label:function(c){return c.raw.toLocaleString()+" RPS/core · "+rows[c.dataIndex][2]+" MB RSS";}}} },
-      scales:{ x:{ title:{display:true,text:"RPS per core (higher better) — label shows serving RAM"},
+        tooltip:{callbacks:{label:function(c){return c.raw.toLocaleString()+" req/s (with ORM) · "+rows[c.dataIndex][2]+" MB PSS";}}} },
+      scales:{ x:{ title:{display:true,text:"requests/sec through the ORM — 8-vCPU machine, median of 5 hosts — label shows RAM"},
           grid:{color:"#eee"}, ticks:{font:{size:10}} },
         y:{ grid:{display:false}, ticks:{font:{size:11},
-          // dim the MB sub-label
           callback:function(v){return this.getLabelForValue(v);} } } },
       animation:false }
   });
 })();
 </script>
 <p class="radar-legend"><span style="color:#b45309">&#9632;</span> JavaScript &nbsp; <span style="color:#b91c1c">&#9632;</span> Ruby &nbsp; <span style="color:#1d4ed8">&#9632;</span> Python.
-Bar length = throughput, label = serving RAM. <strong>Rage (async Ruby, 29k) sits right with the JS pack</strong>, beating both
-Python arms and threaded Rails. Among JS, <strong>NestJS (full framework) costs ~25% throughput vs raw node:http and the most
-RAM</strong> (1.3&nbsp;GB) &mdash; the heavyweight-framework tax. Django anchors the bottom (4.7k); Bun leads on both throughput
-and memory (485&nbsp;MB).</p>
+Bar = throughput through the ORM, label = serving RAM (PSS). The raw JS arms (Bun/Deno/Node) have no ORM, so they keep raw speed.
+<strong>Among stacks that do use an ORM, async Ruby (Rage + ActiveRecord, 23k) is the clear leader</strong>: 2&times; NestJS
+(Prisma 12.5k) and ~4&times; the FastAPI / Django / Rails cluster (5&ndash;6k). <strong>Prisma and SQLAlchemy sink Nest and
+FastAPI</strong> from their fast raw ceilings; Rails&rsquo; threaded model is the floor. Bun leads outright (45k) on both throughput
+and RAM (490&nbsp;MB). NestJS+Prisma is the RAM hog (1.4&nbsp;GB).</p>
 
-<h2>Part 1 &mdash; Local benchmark: 8 stacks, 3 languages, identical work</h2>
+<h2>Part 1: Multi-host benchmark of 8 stacks across 3 languages, identical work</h2>
 <p>
   Eight stacks across Ruby, Python, and JavaScript, each doing <strong>provably identical work</strong> (verified byte-identical
   before benchmarking). Endpoints: one DB-backed read (I/O), the same read via each framework&rsquo;s <strong>ORM</strong>, and
@@ -181,7 +184,7 @@ and memory (485&nbsp;MB).</p>
 <ul>
   <li><code>GET /widgets/:id</code> &rarr; one indexed Postgres row &rarr; JSON (raw driver / hand-mapped)</li>
   <li><code>GET /widgets-orm/:id</code> &rarr; same row via the framework&rsquo;s ORM (the ORM-tax test, below)</li>
-  <li><code>/cpu/json</code> · <code>/cpu/jwt</code> · <code>/cpu/template</code> · <code>/cpu/crypto</code> · <code>/cpu/loop</code> &mdash; five CPU tasks (below)</li>
+  <li><code>/cpu/json</code> · <code>/cpu/jwt</code> · <code>/cpu/template</code> · <code>/cpu/crypto</code> · <code>/cpu/loop</code>, five named CPU tasks (below)</li>
 </ul>
 
 <table>
@@ -198,83 +201,80 @@ and memory (485&nbsp;MB).</p>
   </tbody>
 </table>
 <p class="note">
-  Rig: Apple M-series, 10 cores / 32&nbsp;GB, macOS. Postgres 17.9, 1000-row table. Load: <code>oha</code> 1.14,
-  <strong>200 concurrent connections, 10 workers/arm, 4 threads where applicable, 3&times;30&nbsp;s rounds</strong> (median reported).
-  YJIT on for all Ruby arms; CPython GIL-on / JIT-off (production default). Every arm: 0 errors, output verified byte-identical.
-  <br><strong>Versions (pinned):</strong> Bun 1.3.14 · Node 26.0.0 · Deno 2.6.6 · Ruby 4.0.5 (+YJIT, 2026-05-20) · CPython 3.14.5 · Postgres 17.9.
+  Rig: <strong>5 Fly performance-8x machines</strong> (8 dedicated vCPU, 16&nbsp;GB, Linux x86_64): 2 Intel Xeon 2.3&nbsp;GHz, 3 AMD
+  EPYC. Postgres on the same machine (loopback), 1000-row table. Load: <code>oha</code> 1.14, <strong>200 concurrent connections, 8
+  workers/arm, 4 threads where applicable, 3&times;30&nbsp;s rounds per host</strong>; reported number is the <strong>median of the 5
+  hosts</strong>. All arms run together in one session per host, so each host is a fair within-machine comparison. YJIT on for all Ruby
+  arms; CPython GIL-on / JIT-off (production default). Every arm: 0 errors, output verified byte-identical.
+  <br><strong>Versions (pinned):</strong> Bun 1.3.14 · Node 26.0.0 · Deno 2.6.6 · Ruby 4.0.5 (+YJIT, 2026-05-20) · CPython 3.14.5 · Postgres 17.10.
   Rails 8.1.3 / Puma 8.0.2 · Rage 1.25.0 · FastAPI 0.136.3 / uvicorn 0.49.0 / uvloop 0.22.1 · Django 6.0.6 / gunicorn 26.0.0 · NestJS 10 / Express 5.
   Drivers: node-postgres 8.21.0, asyncpg 0.31.0, psycopg3 3.3.4, pg gem 1.6.3, Bun SQL. ORMs: ActiveRecord 8.1.3, SQLAlchemy 2.0.50, Django ORM, Prisma 6.19.3.
-  Roda was dropped: its idiomatic Sequel ORM corrupts under Falcon&rsquo;s fibers and the pg gem segfaults under Puma&rsquo;s fork on
-  this setup, so it had no fair multi-process config (see caveats).
+  Roda was dropped: its idiomatic Sequel ORM corrupts under fibers and the pg gem segfaults under Puma&rsquo;s fork, so it had no fair
+  multi-process config (see caveats).
 </p>
 
-<h3>I/O-bound &mdash; <code>GET /widgets/42</code> (DB &rarr; JSON), 200 conc · 3&times;30&nbsp;s</h3>
-<p class="note" style="margin-top:0;">The <strong>tail column (p99&divide;p50)</strong> is the SLA story: how much the slowest requests blow out vs typical. Low = predictable.</p>
+<h3>Throughput: <code>GET /widgets-orm/42</code>, through each stack&rsquo;s ORM</h3>
+<p class="note" style="margin-top:0;">Headline = <strong>RPS through the ORM you&rsquo;d ship</strong> (the raw JS arms hand-map, idiomatic there).
+<strong>range</strong> = min&ndash;max across 5 hosts; <strong>tax</strong> = throughput lost vs the raw driver; <strong>tail</strong> =
+p99&divide;p50, the SLA story. Median of 5 Fly performance-8x hosts, 200 conc.</p>
 <table>
-  <thead><tr><th>Stack</th><th class="num">RPS</th><th class="num">RSS</th><th class="num">p50</th><th class="num">p99</th><th class="num">tail<br><span class="unit">p99/p50</span></th></tr></thead>
+  <thead><tr><th>Stack</th><th class="num">RPS<br><span class="unit">with ORM</span></th><th class="num">range<br><span class="unit">5 hosts</span></th><th class="num">raw</th><th class="num">ORM<br>tax</th><th class="num">RAM<br><span class="unit">PSS</span></th><th class="num">tail<br><span class="unit">p99/p50</span></th></tr></thead>
   <tbody>
-    <tr class="win"><td>Bun.serve <span class="tag js">JSC</span></td><td class="num">42,475</td><td class="num">485 MB</td><td class="num">4.5 ms</td><td class="num">9.2 ms</td><td class="num"><strong>2.1&times;</strong></td></tr>
-    <tr><td>Deno.serve <span class="tag js">V8</span></td><td class="num">34,619</td><td class="num">615 MB</td><td class="num">4.5 ms</td><td class="num">24.3 ms</td><td class="num">5.4&times;</td></tr>
-    <tr><td>node:http <span class="tag js">V8</span></td><td class="num">32,009</td><td class="num">1,009 MB</td><td class="num">5.0 ms</td><td class="num">24.9 ms</td><td class="num">5.0&times;</td></tr>
-    <tr><td>NestJS <span class="tag js">V8</span></td><td class="num">31,848</td><td class="num">1,272 MB</td><td class="num">5.4 ms</td><td class="num">20.2 ms</td><td class="num">3.8&times;</td></tr>
-    <tr><td>Rage <span class="tag rb">Rb+YJIT</span></td><td class="num">29,354</td><td class="num">812 MB</td><td class="num">5.6 ms</td><td class="num">24.2 ms</td><td class="num">4.3&times;</td></tr>
-    <tr><td>FastAPI <span class="tag py">Py</span></td><td class="num">14,977</td><td class="num">1,008 MB</td><td class="num">11.7 ms</td><td class="num">45.0 ms</td><td class="num">3.9&times;</td></tr>
-    <tr><td>Rails + Puma <span class="tag rb">Rb+YJIT</span></td><td class="num">10,175</td><td class="num">963 MB</td><td class="num">18.9 ms</td><td class="num">39.6 ms</td><td class="num"><strong>2.1&times;</strong></td></tr>
-    <tr><td>Django <span class="tag py">Py</span></td><td class="num">4,750</td><td class="num">581 MB</td><td class="num">37.3 ms</td><td class="num">181.3 ms</td><td class="num">4.9&times;</td></tr>
+    <tr class="win"><td>Bun.serve <span class="tag js">JSC</span></td><td class="num">44,997</td><td class="num">37&ndash;72k</td><td class="num">44,933</td><td class="num">~0%</td><td class="num">490</td><td class="num">4.0&times;</td></tr>
+    <tr><td>Deno.serve <span class="tag js">V8</span></td><td class="num">29,250</td><td class="num">26&ndash;38k</td><td class="num">29,314</td><td class="num">~0%</td><td class="num">585</td><td class="num">4.1&times;</td></tr>
+    <tr><td>node:http <span class="tag js">V8</span></td><td class="num">27,512</td><td class="num">25&ndash;40k</td><td class="num">27,634</td><td class="num">~0%</td><td class="num">516</td><td class="num"><strong>1.6&times;</strong></td></tr>
+    <tr><td>Rage <span class="tag rb">Ruby</span> <span class="unit">ActiveRecord</span></td><td class="num">22,820</td><td class="num">21&ndash;31k</td><td class="num">24,058</td><td class="num">5%</td><td class="num">483</td><td class="num"><strong>21&times;</strong></td></tr>
+    <tr><td>NestJS <span class="tag js">Prisma</span></td><td class="num">12,491</td><td class="num">11&ndash;16k</td><td class="num">21,991</td><td class="cell worst"><strong>43%</strong></td><td class="num">1,364</td><td class="num">2.2&times;</td></tr>
+    <tr><td>FastAPI <span class="tag py">SQLAlchemy</span></td><td class="num">6,217</td><td class="num">5&ndash;7k</td><td class="num">14,362</td><td class="cell worst"><strong>57%</strong></td><td class="num">604</td><td class="num">3.5&times;</td></tr>
+    <tr><td>Django <span class="tag py">Django ORM</span></td><td class="num">5,446</td><td class="num">4&ndash;6k</td><td class="num">7,138</td><td class="num">24%</td><td class="num">328</td><td class="num">3.1&times;</td></tr>
+    <tr><td>Rails + Puma <span class="tag rb">Ruby</span> <span class="unit">ActiveRecord</span></td><td class="num">5,027</td><td class="num">4&ndash;7k</td><td class="num">5,096</td><td class="num">1%</td><td class="num">565</td><td class="num"><strong>1.5&times;</strong></td></tr>
   </tbody>
 </table>
 <div class="verdict">
-  <span class="v-win">🏆 <b>Bun</b> 42.5k, leanest (485 MB), steadiest tail (2.1&times;)</span>
-  <span class="v-close"><b>Rage</b> 29k rides with the JS pack; <b>Nest</b> costs ~25% + 1.3 GB for the framework</span>
-  <span class="v-lose"><b>Django</b> 4.7k, p99 181 ms; threaded Python/Ruby trail</span>
+  <span class="v-win">🏆 <b>Bun</b> 45k, leanest (490 MB)</span>
+  <span class="v-close"><b>Rage</b> 23k leads the ORM-based stacks: 2&times; NestJS, ~4&times; the rest</span>
+  <span class="v-lose"><b>Rails</b> 5k floor; <b>Prisma/SQLAlchemy</b> halve Nest/FastAPI</span>
 </div>
-<p class="note">Tail latency, not median, is where the threaded + bouncy stacks hurt: <strong>Django&rsquo;s p99 is 181&nbsp;ms (4.9&times; its
-median)</strong> and Node/Deno bounce ~5&times; despite strong medians. <strong>Bun and Rails are the steadiest (2.1&times;)</strong> &mdash;
-Bun because it&rsquo;s never saturated, Rails because its threaded model queues evenly. Stable across 3 rounds (Bun stdev 1.5k of 42k).</p>
+<p class="note"><strong>Below the raw JS arms, the ORM is the story.</strong> ActiveRecord is nearly free (Rails 1%, Rage 5%), so async Ruby
+keeps 23k; Django&rsquo;s ORM costs 24%; <strong>Prisma cuts Nest 43% and SQLAlchemy cuts FastAPI 57%</strong>, dropping them from fast
+raw ceilings (22k, 14k) to 12k and 6k. The raw JS arms&rsquo; ~0% tax confirms the test is clean: identical work, the delta is the ORM.
+<strong>Tails:</strong> Node and Rails steadiest (1.5&ndash;1.6&times;); <strong>Rage&rsquo;s is the worst (21&times;, p99 64&nbsp;ms)</strong>
+. Its fiber scheduler trades a long tail for a high median.</p>
 
-<h3>The ORM tax &mdash; raw driver vs the framework&rsquo;s ORM</h3>
-<p>
-  Real apps don&rsquo;t hand-write SQL; they use an ORM that turns rows into objects. That object-mapping is often the single biggest
-  per-request cost. So every framework also serves <code>/widgets-orm/:id</code> &mdash; the same row, same JSON, through its
-  <strong>idiomatic ORM</strong>. The raw JS arms have no ORM, so their <code>/widgets-orm</code> is hand-mapping (the ~0% baseline
-  that proves the test is clean). <strong>RPS, higher better; tax = throughput lost vs the raw endpoint:</strong>
-</p>
-<table class="cpu">
-  <thead><tr><th class="task">Stack &mdash; ORM</th><th class="num">raw RPS</th><th class="num">ORM RPS</th><th class="num">ORM tax</th><th class="num">ORM RAM</th></tr></thead>
-  <tbody>
-    <tr><td class="task">Bun <span class="unit">· hand-mapped</span></td><td class="num">42,475</td><td class="num">41,733</td><td class="cell best">~0%</td><td class="num">486 MB</td></tr>
-    <tr><td class="task">Deno <span class="unit">· hand-mapped</span></td><td class="num">34,619</td><td class="num">34,847</td><td class="cell best">~0%</td><td class="num">602 MB</td></tr>
-    <tr><td class="task">node:http <span class="unit">· hand-mapped</span></td><td class="num">32,009</td><td class="num">32,384</td><td class="cell best">~0%</td><td class="num">919 MB</td></tr>
-    <tr><td class="task">Rage <span class="tag rb">ActiveRecord</span></td><td class="num">29,354</td><td class="num">26,153</td><td class="num">11%</td><td class="num">1,081 MB</td></tr>
-    <tr><td class="task">NestJS <span class="tag js">Prisma</span></td><td class="num">31,848</td><td class="num">13,168</td><td class="cell worst"><strong>59%</strong></td><td class="num">1,820 MB</td></tr>
-    <tr><td class="task">Rails <span class="tag rb">ActiveRecord</span></td><td class="num">10,175</td><td class="num">9,786</td><td class="num">4%</td><td class="num">965 MB</td></tr>
-    <tr><td class="task">FastAPI <span class="tag py">SQLAlchemy</span></td><td class="num">14,977</td><td class="num">7,062</td><td class="cell worst"><strong>53%</strong></td><td class="num">1,022 MB</td></tr>
-    <tr><td class="task">Django <span class="tag py">Django ORM</span></td><td class="num">4,750</td><td class="num">4,399</td><td class="num">7%</td><td class="num">529 MB</td></tr>
-  </tbody>
-</table>
-<div class="verdict">
-  <span class="v-win">🏆 Cheap ORMs: <b>ActiveRecord</b> (4&ndash;11%), <b>Django ORM</b> (7%)</span>
-  <span class="v-lose">Expensive: <b>SQLAlchemy halves</b> FastAPI (53%), <b>Prisma halves</b> Nest (59%, +0.5 GB RAM)</span>
+<div class="callout">
+<strong>How Rage runs ActiveRecord async.</strong> Rage serves on <strong>Iodine</strong>, a fiber-based reactor. Plain ActiveRecord
+blocks a thread for the whole query, which would stall a reactor, so Rage ships a <strong>fiber-aware connection pool plus a fiber
+scheduler</strong>: a blocking <code>pg</code> call yields its fiber and Iodine serves other requests while Postgres works. That overlap
+is why Rage holds 23k where threaded Rails sits at 5k, on the same ActiveRecord API. <strong>Falcon</strong> (the other async Ruby
+server) hits the wall this sidesteps: Rails 7&rsquo;s pool is fiber-safe (<a href="https://github.com/rails/rails/pull/44219">PR
+#44219</a>), but libpq still blocks the thread, so without Rage&rsquo;s scheduler integration the queries don&rsquo;t overlap. The cost
+is the tail above: fibers multiplexed on one thread queue behind each other, so p99 stretches to 21&times; the median.
 </div>
-<p class="note"><strong>The ORM you pick can matter more than the language.</strong> ActiveRecord and Django&rsquo;s ORM are nearly free
-(mature, C-backed row hydration). SQLAlchemy and Prisma each roughly <em>halve</em> throughput &mdash; Prisma additionally jumps
-RAM 1.3&nbsp;&rarr;&nbsp;1.8&nbsp;GB (its query engine). The raw JS arms&rsquo; ~0% confirms the comparison is clean: identical work, the
-delta is purely the ORM. (Numbers are medians of 3&times;30&nbsp;s @ 200 conc; 0 errors.)</p>
 
-<h3>CPU-bound &mdash; the tasks a real SaaS app actually runs</h3>
+<h3>The host you land on moves the number 1.3&ndash;1.9&times;</h3>
+<div class="callout">
+We ran the full 8-arm suite on <strong>5 separate Fly performance-8x machines</strong> (2 Intel Xeon 2.3&nbsp;GHz, 3 AMD EPYC), same
+image, same config. The Intel hosts ran <strong>~1.5&times; faster</strong> than the AMD ones on every stack: Bun 37k&ndash;72k,
+Node 25k&ndash;40k, Rails 4k&ndash;7k. That swing is wider than several of the runtime gaps we&rsquo;re measuring. <strong>The relative
+ordering was identical on all 5 hosts</strong>, so the rankings hold, but read any single absolute RPS as roughly &plusmn;30%. Every
+number here is the median of the 5. The lesson for cloud-cost benchmarks: the CPU you happen to be scheduled on can matter as much as
+the framework you chose.
+</div>
+
+<h3>CPU-bound: the tasks a real SaaS app actually runs</h3>
 <p>
-  CPU over HTTP is meaningless under load (you measure queueing, not the CPU), so each runtime times the identical operation
+  CPU over HTTP measures queueing under load, so each runtime times the identical operation
   <strong>in-process, no server</strong>, using each language&rsquo;s <strong>real library</strong> (template engines Erubi/EJS/Jinja2,
   native crypto/json). Tasks are ordered by how often a JSON-API backend runs them: serialization and auth on every request,
-  templates for server-rendered apps, password hashing only at login, arithmetic almost never (cleanest VM benchmark, not typical
-  load). Green = row winner.
+  templates for server-rendered apps, password hashing only at login, arithmetic almost never (the cleanest VM signal, rarely the
+  real load). Green = row winner.
 </p>
 
-<h4 style="margin:1rem 0 .3rem;font-size:.95rem;">Speed &mdash; ms per call (lower better)</h4>
+<h4 style="margin:1rem 0 .3rem;font-size:.95rem;">Speed: ms per call (lower better)</h4>
 <table class="cpu">
   <thead><tr>
-    <th class="task">Task &mdash; frequency</th>
-    <th>Ruby<br><span class="tag rb">+YJIT</span></th>
+    <th class="task">Task / frequency</th>
+    <th><span class="tag rb">Ruby</span></th>
     <th>Bun<br><span class="tag js">JSC</span></th>
     <th>Node<br><span class="tag js">V8</span></th>
     <th>Deno<br><span class="tag js">V8</span></th>
@@ -284,42 +284,42 @@ delta is purely the ORM. (Numbers are medians of 3&times;30&nbsp;s @ 200 conc; 0
   <tbody>
     <tr>
       <td class="task"><strong>json</strong> serialize <span class="unit">· every request</span></td>
-      <td class="cell">0.015</td><td class="cell">0.021</td><td class="cell best">0.009</td><td class="cell best">0.009</td><td class="cell worst">0.057</td>
-      <td><span class="tag js">V8</span> <span class="unit">Ruby 2nd</span></td>
+      <td class="cell">0.036</td><td class="cell">0.047</td><td class="cell best">0.022</td><td class="cell best">0.022</td><td class="cell worst">0.106</td>
+      <td><span class="tag js">V8</span> <span class="unit">Python last</span></td>
     </tr>
     <tr>
       <td class="task"><strong>jwt</strong> HS256 sign <span class="unit">· every authed request</span></td>
-      <td class="cell">0.0054</td><td class="cell best">0.0015</td><td class="cell">0.0017</td><td class="cell">0.0036</td><td class="cell worst">0.0058</td>
-      <td><span class="tag js">Bun</span> <span class="unit">all sub-6&micro;s</span></td>
+      <td class="cell">0.015</td><td class="cell best">0.004</td><td class="cell best">0.004</td><td class="cell">0.015</td><td class="cell">0.011</td>
+      <td><span class="tag js">Bun/Node</span> <span class="unit">all sub-15&micro;s</span></td>
     </tr>
     <tr>
       <td class="task"><strong>template</strong> HTML render <span class="unit">· server-rendered apps</span></td>
-      <td class="cell best">0.046<sup>&Dagger;</sup></td><td class="cell">0.086</td><td class="cell worst">0.100</td><td class="cell">0.097</td><td class="cell">0.148</td>
-      <td><span class="tag rb">Ruby</span> <span class="unit">Erubi; Python last</span></td>
+      <td class="cell best">0.085<sup>&Dagger;</sup></td><td class="cell">0.254</td><td class="cell">0.230</td><td class="cell">0.242</td><td class="cell worst">0.256</td>
+      <td><span class="tag rb">Ruby</span> <span class="winner">2.7&times;</span></td>
     </tr>
     <tr>
       <td class="task"><strong>crypto</strong> PBKDF2 <span class="unit">· login only</span></td>
-      <td class="cell">5.58</td><td class="cell best">3.58</td><td class="cell">5.56</td><td class="cell worst">31.74</td><td class="cell">5.59</td>
-      <td><span class="tag js">Bun</span> <span class="unit">Ruby ties field</span></td>
+      <td class="cell">13.5</td><td class="cell best">8.4</td><td class="cell worst">15.8</td><td class="cell">13.1</td><td class="cell">10.5</td>
+      <td><span class="tag js">Bun</span> <span class="unit">BoringSSL</span></td>
     </tr>
     <tr>
       <td class="task"><strong>loop</strong> arithmetic <span class="unit">· rare (VM reference)</span></td>
-      <td class="cell best">4.50</td><td class="cell">8.21</td><td class="cell">9.96</td><td class="cell">9.97</td><td class="cell worst">10.35</td>
-      <td><span class="tag rb">Ruby</span> <span class="winner">2.2&times;</span></td>
+      <td class="cell">11.0</td><td class="cell worst">22.2</td><td class="cell best">2.67</td><td class="cell best">2.66</td><td class="cell">16.5</td>
+      <td><span class="tag js">V8</span> <span class="winner">4&times;</span></td>
     </tr>
   </tbody>
 </table>
 <div class="verdict">
-  <span class="v-win">🏆 <b>Ruby</b> wins template + arithmetic, ties crypto</span>
-  <span class="v-close"><b>V8/Bun</b> win json + jwt</span>
-  <span class="v-lose"><b>Python</b> slowest on template; <b>Deno</b> 6&times; on crypto</span>
+  <span class="v-win">🏆 <b>Ruby</b> wins template (Erubi); <b>V8</b> wins json + arithmetic</span>
+  <span class="v-close"><b>Bun</b> wins crypto, ties jwt</span>
+  <span class="v-lose"><b>Python</b> slowest json; <b>Bun</b> 8&times; slowest on the loop</span>
 </div>
 
-<h4 style="margin:1.4rem 0 .3rem;font-size:.95rem;">Peak RAM &mdash; MB per task (lower better)</h4>
+<h4 style="margin:1.4rem 0 .3rem;font-size:.95rem;">Peak RAM: MB per task (lower better)</h4>
 <table class="cpu">
   <thead><tr>
     <th class="task">Task</th>
-    <th>Ruby<br><span class="tag rb">+YJIT</span></th>
+    <th><span class="tag rb">Ruby</span></th>
     <th>Bun<br><span class="tag js">JSC</span></th>
     <th>Node<br><span class="tag js">V8</span></th>
     <th>Deno<br><span class="tag js">V8</span></th>
@@ -328,58 +328,60 @@ delta is purely the ORM. (Numbers are medians of 3&times;30&nbsp;s @ 200 conc; 0
   </tr></thead>
   <tbody>
     <tr><td class="task"><strong>json</strong></td>
-      <td class="cell worst">114</td><td class="cell">90</td><td class="cell">53</td><td class="cell">55</td><td class="cell best">15</td>
-      <td><span class="tag py">Python</span> <span class="unit">Ruby balloons</span></td></tr>
+      <td class="cell">52</td><td class="cell worst">87</td><td class="cell">57</td><td class="cell">66</td><td class="cell best">21</td>
+      <td><span class="tag py">Python</span> <span class="unit">Ruby 2&times; here</span></td></tr>
     <tr><td class="task"><strong>jwt</strong></td>
-      <td class="cell">24</td><td class="cell worst">105</td><td class="cell">57</td><td class="cell">83</td><td class="cell best">15</td>
+      <td class="cell">26</td><td class="cell worst">112</td><td class="cell">60</td><td class="cell">84</td><td class="cell best">21</td>
       <td><span class="tag py">Python</span></td></tr>
     <tr><td class="task"><strong>template</strong></td>
-      <td class="cell best">18</td><td class="cell worst">85</td><td class="cell">68</td><td class="cell">74</td><td class="cell">23</td>
-      <td><span class="tag rb">Ruby</span> <span class="unit">Erubi compiled</span></td></tr>
+      <td class="cell">24</td><td class="cell worst">92</td><td class="cell">64</td><td class="cell">74</td><td class="cell best">21</td>
+      <td><span class="tag py">Python</span> <span class="unit">Ruby 2nd</span></td></tr>
     <tr><td class="task"><strong>crypto</strong></td>
-      <td class="cell">23</td><td class="cell">31</td><td class="cell">48</td><td class="cell worst">52</td><td class="cell best">15</td>
+      <td class="cell">24</td><td class="cell">44</td><td class="cell">52</td><td class="cell worst">60</td><td class="cell best">21</td>
       <td><span class="tag py">Python</span></td></tr>
     <tr><td class="task"><strong>loop</strong></td>
-      <td class="cell">22</td><td class="cell">32</td><td class="cell">50</td><td class="cell worst">54</td><td class="cell best">15</td>
+      <td class="cell">24</td><td class="cell">44</td><td class="cell">57</td><td class="cell worst">65</td><td class="cell best">21</td>
       <td><span class="tag py">Python</span></td></tr>
   </tbody>
 </table>
 <div class="verdict">
-  <span class="v-win">🏆 <b>Python</b> 15&nbsp;MB flat; <b>Ruby</b> wins template (18)</span>
-  <span class="v-close"><b>Ruby</b> lean (~23&nbsp;MB) most tasks</span>
-  <span class="v-lose"><b>Ruby json 114&nbsp;MB</b>; JS 50&ndash;105&nbsp;MB throughout</span>
+  <span class="v-win">🏆 <b>Python</b> 21&nbsp;MB flat, every task</span>
+  <span class="v-close"><b>Ruby</b> lean (~24&nbsp;MB), except json (52)</span>
+  <span class="v-lose"><b>Bun</b> heaviest (44&ndash;112); Node/Deno 52&ndash;84</span>
 </div>
-<p class="note">Speed: mean over thousands of reps, stable across runs. RAM: peak RSS, median of 3 isolated runs, 5&nbsp;ms sampling.
-Outputs verified canonical: json 9098 B, jwt 179-char token, crypto hex, loop 400001. Template is each engine&rsquo;s
-native escaping (Erubi 7778 B with <code>&amp;quot;</code>, EJS/Jinja2 7578 B with <code>&amp;#34;</code>) &mdash; same logical
-HTML, the fair real-world choice.<br>
+<p class="note">Two memory metrics, both measured. <strong>Per-task RAM</strong> (above): peak RSS of a process running one task in isolation,
+median of 5 hosts. Python is flat at its ~21&nbsp;MB interpreter base; V8/JSC reserve large JIT code caches and GC heaps even for trivial
+work. <strong>Server RAM</strong> (throughput table): <strong>PSS</strong> (proportional set size) of the whole worker tree, which splits
+shared copy-on-write pages across forked workers, so it reports real physical RAM rather than a per-worker over-count. Forked Python
+(Django) is low partly from that sharing. One caveat: CPython&rsquo;s refcounting slowly privatizes shared pages, so a long-lived process
+drifts above this under-load sample. Outputs verified canonical: json 9098&nbsp;B, jwt 179-char token, crypto hex, loop 400001.<br>
 <sup>&Dagger;</sup><strong>Template uses each language&rsquo;s real engine</strong> (Ruby Erubi, JS EJS, Python Jinja2), not hand-rolled
-string-building. This matters: a naive Ruby concat with 4&times;<code>gsub</code> escaping ran 0.18&nbsp;ms (last place); swapping to
-Erubi&rsquo;s compiled output + <code>ERB::Util.html_escape</code> dropped it to 0.046&nbsp;ms (first). The benchmark was measuring the
-escape function, not the engine. <a href="https://github.com/marcoroth/herb">Herb</a> (HTML-aware ERB, adopted at GitHub) renders
-identical output but ~3.6&times; slower than Erubi today; its value is tooling and validation, not render speed.<br>
-Regex was dropped (rare in web workloads); for the record Ruby ran it at 0.0022&nbsp;ms with the <code>re2</code> gem vs 0.0037&nbsp;ms built-in.</p>
+string-building. A naive Ruby concat with 4&times;<code>gsub</code> escaping measured the escape function rather than the engine; Erubi&rsquo;s
+compiled output dropped it from last place to first. Native escaping differs (Erubi 7778&nbsp;B with <code>&amp;quot;</code>,
+EJS/Jinja2 7578&nbsp;B with <code>&amp;#34;</code>): same logical HTML.</p>
 
 <h3>What the matrix shows</h3>
 <ol>
-  <li><strong>Concurrency model dominates I/O.</strong> All five async arms (15k&ndash;42k) beat both threaded arms (4.7k&ndash;10k). Bun is 9&times; Django. It&rsquo;s about overlapping DB waits, not the language.</li>
-  <li><strong>Bun (JavaScriptCore) wins I/O outright</strong> &mdash; fastest, leanest RAM, steadiest tail. Among V8, Deno edges raw <code>node:http</code>; NestJS (full framework) trails the raw runtimes by ~25% and costs the most RAM.</li>
-  <li><strong>Rage (async Ruby) is the surprise</strong> &mdash; 29k rides with the JS pack and beats both Python arms, using a fiber-aware ActiveRecord on the Iodine server. Async Ruby is genuinely competitive at scale.</li>
-  <li><strong>The ORM tax can dwarf the language gap:</strong> ActiveRecord &amp; Django ORM cost 4&ndash;11%, but SQLAlchemy and Prisma each ~halve throughput. Pick the ORM as carefully as the framework.</li>
-  <li><strong>CPU depends on the operation</strong> (measured raw, not over HTTP): Ruby+YJIT wins templating + arithmetic, V8/Bun win json + jwt, crypto ties. Python is leanest per CPU task. Use the real library &mdash; a naive Ruby template ran 4&times; slower than Erubi.</li>
+  <li><strong>Concurrency model dominates I/O.</strong> Every async arm beats both threaded arms; Bun (45k) is 9&times; Rails (5k). The lever is overlapping DB waits, which is language-agnostic.</li>
+  <li><strong>Bun (JavaScriptCore) wins I/O outright:</strong> fastest and leanest RAM. The raw JS arms skip the ORM, so they keep raw speed (idiomatic for JS).</li>
+  <li><strong>Among stacks that use an ORM, async Ruby leads.</strong> Rage (fiber-aware ActiveRecord on Iodine) holds 23k: 2&times; NestJS/Prisma and ~4&times; FastAPI, Django, and Rails. Its one weakness is a long tail (p99 21&times; median).</li>
+  <li><strong>The ORM is the real lever below the JS arms.</strong> ActiveRecord is nearly free (1&ndash;5%) and Django&rsquo;s ORM costs 24%, while Prisma cuts Nest 43% and SQLAlchemy cuts FastAPI 57%. Pick the ORM as carefully as the framework.</li>
+  <li><strong>The host is a lever too.</strong> The same stack swung 1.3&ndash;1.9&times; between Fly machines (Intel ~1.5&times; AMD). Rankings held; absolute RPS is a range.</li>
+  <li><strong>CPU depends on the operation</strong> (x86, measured in-process): Ruby+YJIT wins templating, V8 (Node/Deno) win json and arithmetic, Bun wins crypto. Python is leanest per task. Use the real library: a naive Ruby template measured the escape function rather than the engine.</li>
 </ol>
 
 <h3>Caveats</h3>
 <ul>
-  <li><strong>Roda dropped.</strong> Its idiomatic Sequel ORM corrupts under Falcon&rsquo;s fibers (23/50 concurrent queries error), the async <code>db-postgres</code> driver isn&rsquo;t thread-safe (49/50), and the <code>pg</code> gem segfaults under Puma&rsquo;s fork on this macOS setup. No fair multi-process config. The broader point: <strong>async Ruby has no thread-or-fiber-safe ORM today</strong> &mdash; Rails 7&rsquo;s pool is fiber-safe (<a href="https://github.com/rails/rails/pull/44219">PR #44219</a>), but the pg driver still blocks, so an async ORM needs an async-native driver (which lacks an ORM) or runs threaded.</li>
-  <li><strong>CPU measured raw, not over HTTP</strong> &mdash; at high concurrency the HTTP CPU numbers measured queueing, not CPU. CPU is the per-call microbench instead.</li>
-  <li>Deno/Bun used node-postgres / Bun-native SQL; native drivers differ. Single box, loopback, tiny DB &mdash; real apps sit longer in the DB, compressing these gaps. macOS, not Linux.</li>
+  <li><strong>The raw JS arms have no ORM.</strong> Bun/Deno/Node hand-map rows because that&rsquo;s idiomatic for JS; their headline isn&rsquo;t penalized by an ORM the way Rails/Django/Nest/FastAPI are. NestJS+Prisma is the JS arm that pays the ORM tax. Read the throughput table with that in mind.</li>
+  <li><strong>Single box, loopback, tiny DB.</strong> Postgres runs on the same machine and the table is 1000 cached rows, so the DB round-trip is near-free. Real apps sit longer in the DB, which compresses the gaps between these runtimes.</li>
+  <li><strong>Roda dropped.</strong> Its idiomatic Sequel ORM corrupts under fibers and the <code>pg</code> gem segfaults under Puma&rsquo;s fork, so it had no fair multi-process config. The broader point: <strong>async Ruby has no thread-or-fiber-safe ORM today</strong>. Rails 7&rsquo;s pool is fiber-safe (<a href="https://github.com/rails/rails/pull/44219">PR #44219</a>), but the pg driver still blocks, so an async ORM needs an async-native driver (which lacks an ORM) or runs threaded. Rage works by patching ActiveRecord for fibers.</li>
+  <li><strong>CPU measured in-process.</strong> At high concurrency the HTTP CPU numbers measure queueing rather than the work, so CPU is the per-call microbench instead. It is architecture-sensitive (these are x86; arm flips several rankings).</li>
 </ul>
 
-<h2>Part 2 &mdash; Web research (multi-source, fact-checked)</h2>
+<h2>Part 2: Web research (multi-source, fact-checked)</h2>
 <p>A 100-agent deep-research sweep with adversarial verification. Meta-finding worth stating: <strong>no rigorous public
-head-to-head Ruby-vs-Python-vs-Node cloud-cost benchmark exists</strong> &mdash; the hard production numbers are Shopify/YJIT
-first-party (Ruby side). That gap is why the local matrix earns its keep.</p>
+head-to-head Ruby-vs-Python-vs-Node cloud-cost benchmark exists</strong>. The hard production numbers are Shopify/YJIT
+first-party (Ruby side). That gap is why the multi-host matrix earns its keep.</p>
 
 <h3>YJIT speedup on real Ruby/Rails web workloads</h3>
 <ul>
@@ -395,8 +397,8 @@ first-party (Ruby side). That gap is why the local matrix earns its keep.</p>
 
 <h3>CPython 3.13/3.14: does the new JIT or free-threading help web apps?</h3>
 <ul>
-  <li><strong>JIT (copy-and-patch):</strong> experimental, <strong>off by default</strong> through 3.14 (<code>PYTHON_JIT=1</code>); release notes publish <strong>no speedup figure</strong>. Independent: ~10&ndash;30% on CPU hot paths after warmup, <strong>~0 for I/O-bound web servers</strong>. Consistent with our un-JIT&rsquo;d CPython being slowest on the pure-arithmetic loop (10.4&nbsp;ms vs Ruby+YJIT 4.5&nbsp;ms) &mdash; a production deploy gets no JIT today.</li>
-  <li><strong>Free-threading (no-GIL):</strong> ~<strong>5&ndash;10% single-thread penalty</strong> now; little throughput for the process-per-core web model (GIL already releases during I/O). Main web benefit is memory sharing, not speed.</li>
+  <li><strong>JIT (copy-and-patch):</strong> experimental, <strong>off by default</strong> through 3.14 (<code>PYTHON_JIT=1</code>); release notes publish <strong>no speedup figure</strong>. Independent: ~10&ndash;30% on CPU hot paths after warmup, <strong>~0 for I/O-bound web servers</strong>. Consistent with our un-JIT&rsquo;d CPython on the pure-arithmetic loop (16.5&nbsp;ms vs V8&rsquo;s 2.7&nbsp;ms). A production deploy gets no JIT today.</li>
+  <li><strong>Free-threading (no-GIL):</strong> ~<strong>5&ndash;10% single-thread penalty</strong> now; little throughput for the process-per-core web model (GIL already releases during I/O). Its main web benefit is memory sharing rather than speed.</li>
   <li><strong>Net:</strong> for I/O-bound web serving, CPython 3.14 &asymp; 3.13 &asymp; 3.12.</li>
 </ul>
 
@@ -406,23 +408,24 @@ together well below them. Consistent with the matrix: the async/sync split outwe
 
 <h2>Bottom line for cost</h2>
 <ol>
-  <li><strong>Choose the concurrency model first.</strong> Async/event-loop buys ~9&times; the throughput on I/O-bound JSON here &rarr; far fewer/smaller instances. Dominant lever, language-agnostic.</li>
-  <li><strong>I/O-bound throughput: Bun is cheapest</strong> (42.5k, JavaScriptCore beating every V8 runtime), then the JS pack (Deno/Node/Nest ~32&ndash;35k) and <strong>Rage (29k, async Ruby)</strong>, then Python/FastAPI (15k). Every async stack beats every threaded one.</li>
-  <li><strong>Mind the ORM.</strong> ActiveRecord and Django ORM are nearly free (4&ndash;11%), but SQLAlchemy and Prisma each ~halve throughput &mdash; a bigger hit than most language differences. Prisma also adds ~0.5&nbsp;GB RAM.</li>
-  <li><strong>Tail latency, not median, is the SLA risk.</strong> Bun &amp; Rails hold p99 near 2&times; their median; Django blows out to 4.9&times; (181&nbsp;ms). A great median can hide a bad tail.</li>
-  <li><strong>CPU-bound: pick the runtime for the operation.</strong> Ruby+YJIT wins HTML templating and arithmetic; json and jwt go to V8/Bun; crypto ties. Or push heavy compute to native libs and it barely matters.</li>
-  <li><strong>Memory: Python leanest per CPU task; Bun leanest serving I/O</strong> (485&nbsp;MB). NestJS+Prisma is the RAM hog (1.8&nbsp;GB). Don&rsquo;t expect CPython 3.13/3.14&rsquo;s JIT or free-threading to cut I/O web cost &mdash; they don&rsquo;t, yet.</li>
+  <li><strong>Choose the concurrency model first.</strong> Async/event-loop buys ~9&times; the throughput on I/O-bound JSON &rarr; far fewer, smaller instances. Dominant lever, language-agnostic.</li>
+  <li><strong>I/O through the ORM: Bun is cheapest</strong> (45k, JavaScriptCore). The raw JS arms lead because JS skips heavy ORMs. <strong>Among stacks that use an ORM, async Ruby (Rage, 23k) wins</strong>: 2&times; NestJS, ~4&times; FastAPI, Django, and Rails.</li>
+  <li><strong>The ORM can cost more than the language.</strong> Prisma cuts NestJS 43% and SQLAlchemy cuts FastAPI 57%; ActiveRecord is nearly free and Django&rsquo;s ORM costs 24%. Prisma also adds ~0.6&nbsp;GB RAM.</li>
+  <li><strong>The cloud host moves the number 1.3&ndash;1.9&times;.</strong> Intel hosts ran ~1.5&times; faster than AMD on Fly. Rankings held, but treat any single absolute as a range. The CPU you&rsquo;re scheduled on rivals the framework choice.</li>
+  <li><strong>CPU-bound: pick the runtime for the operation</strong> (x86). V8 (Node/Deno) win arithmetic and json; Ruby+YJIT wins HTML templating; Bun wins crypto. Or push heavy compute to native libs and it barely matters.</li>
+  <li><strong>Memory: Python is leanest</strong>, 21&nbsp;MB per CPU task and 328&nbsp;MB serving (PSS). NestJS+Prisma is the RAM hog (1.4&nbsp;GB). CPython 3.13/3.14&rsquo;s JIT and free-threading don&rsquo;t cut I/O web cost yet.</li>
 </ol>
-<p><strong>One-sentence answer:</strong> the async-vs-threaded choice matters more than the language; among async stacks Bun leads
-on I/O while async Ruby (Rage) is genuinely competitive, the CPU winner depends on the operation, and the ORM can cost more than
-the runtime &mdash; so &ldquo;cheapest&rdquo; depends on whether your bill is bound by I/O throughput, a CPU operation, your ORM, or RAM.</p>
+<p><strong>One-sentence answer:</strong> the async-vs-threaded choice matters more than the language, Bun leads I/O outright while async Ruby
+(Rage) leads the ORM-based stacks, the ORM can cost more than the runtime, and the cloud host you land on swings the number as much as
+any of these. So &ldquo;cheapest&rdquo; depends on your bottleneck (I/O, a CPU operation, the ORM, or RAM) and a bit on luck.</p>
 
 <h2>Reproduce</h2>
-<p>Harness committed in <code>bench/</code> (extracted to the standalone <code>runtime-bench</code> repo): <code>SPEC.md</code> (the
-shared contract), <code>apps/</code> (8 server apps + ORM endpoints), <code>scripts/run_matrix.sh</code> + <code>servers.sh</code> +
-<code>run_one.sh</code> (boot+warmup+oha+RSS, multi-worker, 3-round), <code>scripts/verify.sh</code> (proves identical output),
-<code>scripts/cpu_micro.{js,py,rb}</code> (raw per-call CPU), <code>setup.sh</code> (provisions all stacks from scratch).
-DB <code>langbench</code>, 1000-row <code>widgets</code>. Run: <code>SCEN=io bash scripts/run_matrix.sh</code> · <code>SCEN=orm …</code>.</p>
+<p>Open-source harness in the standalone <code>runtime-bench</code> repo (MIT): <code>SPEC.md</code> (the shared contract),
+<code>apps/</code> (8 server apps + ORM endpoints), <code>scripts/run_matrix.sh</code> + <code>servers.sh</code> + <code>run_one.sh</code>
+(boot + warmup + oha + PSS memory), <code>scripts/verify.sh</code> (proves identical output), <code>scripts/cpu_micro.{js,py,rb}</code>
++ <code>mem_micro.sh</code> (per-call CPU and per-task RAM), <code>setup.sh</code> (provisions every stack from scratch), and a
+<code>fly/</code> Dockerfile that runs the whole suite on a dedicated machine. DB <code>langbench</code>, 1000-row <code>widgets</code>.
+Run: <code>SCEN=io bash scripts/run_matrix.sh</code> · <code>SCEN=orm …</code>.</p>
 
 <footer>
   <strong>Sources</strong>
